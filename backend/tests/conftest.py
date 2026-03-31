@@ -18,6 +18,7 @@ def database_url(tmp_path) -> str:
 @pytest.fixture
 def configured_database(database_url, monkeypatch) -> Iterator[None]:
     monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setenv("PLANNER_MODE", "local")
     get_settings.cache_clear()
     get_engine.cache_clear()
     init_db()

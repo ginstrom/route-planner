@@ -19,14 +19,25 @@ from backend.solver import solve_route
 from backend.trace import append_trace_step, create_run, create_trace, update_run
 
 
+TOOL_NAME_ALIASES = {
+    "graph_get_state": "graph.get_state",
+    "scenario_get_constraints": "scenario.get_constraints",
+    "parse_request": "parse_request",
+    "planner_preview_problem": "planner.preview_problem",
+    "planner_solve": "planner.solve",
+    "planner_get_candidates": "planner.get_candidates",
+    "planner_verify_solution": "planner.verify_solution",
+    "planner_explain_infeasibility": "planner.explain_infeasibility",
+}
+
 TOOL_DEFINITIONS = [
     {
-        "name": "graph.get_state",
+        "name": "graph_get_state",
         "description": "Return the current graph nodes and edges.",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
-        "name": "scenario.get_constraints",
+        "name": "scenario_get_constraints",
         "description": "Return blocked edges and modified costs relative to the default graph.",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
@@ -41,27 +52,27 @@ TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "planner.preview_problem",
+        "name": "planner_preview_problem",
         "description": "Preview the formal routing problem after parsing.",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
-        "name": "planner.solve",
+        "name": "planner_solve",
         "description": "Solve the current formal routing problem.",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
-        "name": "planner.get_candidates",
+        "name": "planner_get_candidates",
         "description": "Return the candidate routes for the last solve.",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
-        "name": "planner.verify_solution",
+        "name": "planner_verify_solution",
         "description": "Verify the selected route satisfies the request.",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
-        "name": "planner.explain_infeasibility",
+        "name": "planner_explain_infeasibility",
         "description": "Explain why the current request is infeasible.",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
@@ -136,7 +147,13 @@ def _verify_solution(result: DirectSolveResponse, request: DirectSolveRequest) -
     return {"verified": True, "reason": "Route satisfies the requested visits."}
 
 
+def _canonicalize_tool_name(name: str) -> str:
+    return TOOL_NAME_ALIASES.get(name, name)
+
+
 def _execute_tool(session: Session, trace_id: str, state: PlannerState, name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+    name = _canonicalize_tool_name(name)
+
     if name == "graph.get_state":
         payload = state.graph.model_dump()
         append_trace_step(session, trace_id, "tool", name, "Loaded the current graph state.", payload)
@@ -316,11 +333,12 @@ def _assistant_message_content(blocks: list[Any]) -> list[dict[str, Any]]:
     for block in blocks:
         block_type = getattr(block, "type", "")
         if block_type == "tool_use":
+            name = getattr(block, "name")
             serialized.append(
                 {
                     "type": "tool_use",
                     "id": getattr(block, "id"),
-                    "name": getattr(block, "name"),
+                    "name": name,
                     "input": getattr(block, "input", {}),
                 }
             )
@@ -360,7 +378,7 @@ def _run_anthropic_orchestration(
             "planner",
             "planner.llm_turn",
             "Anthropic requested tool calls.",
-            {"tools": [getattr(block, "name", "") for block in tool_uses]},
+            {"tools": [_canonicalize_tool_name(getattr(block, "name", "")) for block in tool_uses]},
         )
         messages.append({"role": "assistant", "content": _assistant_message_content(blocks)})
 
@@ -377,7 +395,7 @@ def _run_anthropic_orchestration(
         messages.append({"role": "user", "content": tool_results})
 
         if state.solved and state.solved.status in {"SUCCESS", "INFEASIBLE"} and any(
-            getattr(block, "name", "") in {"planner.verify_solution", "planner.explain_infeasibility"}
+            _canonicalize_tool_name(getattr(block, "name", "")) in {"planner.verify_solution", "planner.explain_infeasibility"}
             for block in tool_uses
         ):
             return

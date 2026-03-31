@@ -12,7 +12,7 @@ const traceStore = useTraceStore();
 
 const { nodes, edges, loading: graphLoading, error: graphError } = storeToRefs(graphStore);
 const { latestPlan, running, error } = storeToRefs(runStore);
-const { trace, selectedStep, selectedStepIndex } = storeToRefs(traceStore);
+const { trace, selectedStepIndex } = storeToRefs(traceStore);
 
 const plannerQuery = ref("Start at A and visit C and E");
 const scenarioId = ref("baseline");
@@ -235,24 +235,31 @@ onMounted(() => {
 
       <div class="trace-list">
         <h3>Trace</h3>
-        <button
+        <div
           v-for="step in trace?.steps ?? []"
           :key="step.step_index"
-          :data-testid="`trace-step-${step.step_index}`"
-          class="trace-step"
+          class="trace-step-card"
           :class="{ selected: selectedStepIndex === step.step_index }"
-          type="button"
-          @click="traceStore.selectStep(step.step_index)"
         >
-          <strong>{{ step.name }}</strong>
-          <span>{{ step.summary }}</span>
-        </button>
-      </div>
+          <button
+            :data-testid="`trace-step-${step.step_index}`"
+            class="trace-step"
+            :aria-expanded="selectedStepIndex === step.step_index"
+            type="button"
+            @click="traceStore.selectStep(step.step_index)"
+          >
+            <span class="trace-step-copy">
+              <strong>{{ step.name }}</strong>
+              <span>{{ step.summary }}</span>
+            </span>
+            <span class="trace-step-toggle">{{ selectedStepIndex === step.step_index ? "Hide" : "Show" }}</span>
+          </button>
 
-      <div class="trace-details">
-        <h3>Selected Step</h3>
-        <p v-if="selectedStep"><strong>{{ selectedStep.name }}</strong></p>
-        <p>{{ selectedStep?.summary ?? "No trace step selected." }}</p>
+          <div v-if="selectedStepIndex === step.step_index" class="trace-step-details">
+            <p>{{ step.summary }}</p>
+            <p v-if="step.latency_ms !== null"><strong>Latency:</strong> {{ step.latency_ms }} ms</p>
+          </div>
+        </div>
       </div>
 
       <div class="candidate-list">
@@ -466,7 +473,6 @@ button {
 
 .summary-card,
 .trace-list,
-.trace-details,
 .candidate-list {
   display: flex;
   flex-direction: column;
@@ -504,19 +510,53 @@ button {
   font-weight: 700;
 }
 
+.trace-step-card,
+.candidate-card {
+  border-radius: 18px;
+  background: rgba(243, 239, 228, 0.85);
+}
+
 .trace-step,
 .candidate-card {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
   padding: 0.8rem;
-  border-radius: 18px;
-  background: rgba(243, 239, 228, 0.85);
   text-align: left;
 }
 
-.trace-step.selected {
+.trace-step {
+  width: 100%;
+  align-items: stretch;
+  background: transparent;
+  border-radius: 18px;
+  color: inherit;
+}
+
+.trace-step-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.trace-step-toggle {
+  margin-top: 0.45rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #8a4b15;
+}
+
+.trace-step-card.selected {
   outline: 2px solid rgba(22, 63, 82, 0.35);
+}
+
+.trace-step-details {
+  padding: 0 0.8rem 0.8rem;
+  color: #173746;
+}
+
+.trace-step-details p {
+  margin: 0;
 }
 
 .error {

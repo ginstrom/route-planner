@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from backend.config import get_settings
 from backend.db import get_engine
 from backend.main import create_app
+from backend.planner import TOOL_DEFINITIONS
 
 
 def _make_anthropic_client(*responses_or_errors):
@@ -108,13 +109,13 @@ def test_planner_failure_preserves_partial_trace(client) -> None:
 def test_planner_anthropic_mode_executes_tool_loop(monkeypatch, database_url) -> None:
     fake_client = _make_anthropic_client(
         _anthropic_response(
-            _tool_use("graph.get_state", "tool-1", {}),
-            _tool_use("scenario.get_constraints", "tool-2", {}),
+            _tool_use("graph_get_state", "tool-1", {}),
+            _tool_use("scenario_get_constraints", "tool-2", {}),
             _tool_use("parse_request", "tool-3", {"query": "Start at A and visit C and E"}),
-            _tool_use("planner.preview_problem", "tool-4", {}),
-            _tool_use("planner.solve", "tool-5", {}),
-            _tool_use("planner.get_candidates", "tool-6", {}),
-            _tool_use("planner.verify_solution", "tool-7", {}),
+            _tool_use("planner_preview_problem", "tool-4", {}),
+            _tool_use("planner_solve", "tool-5", {}),
+            _tool_use("planner_get_candidates", "tool-6", {}),
+            _tool_use("planner_verify_solution", "tool-7", {}),
         ),
         _anthropic_response(_text_block("Complete")),
     )
@@ -154,3 +155,8 @@ def test_planner_anthropic_mode_fails_without_fallback(monkeypatch, database_url
     assert response.status_code == 200
     assert payload["status"] == "FAILED"
     assert trace["steps"][-1]["name"] == "planner.llm_error"
+
+
+def test_anthropic_tool_names_are_provider_safe() -> None:
+    for tool in TOOL_DEFINITIONS:
+        assert "." not in tool["name"]

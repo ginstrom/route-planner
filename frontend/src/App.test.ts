@@ -117,6 +117,72 @@ describe("App", () => {
     expect(wrapper.get("[data-testid='candidate-0']").text()).toContain("4");
   });
 
+  it("expands and collapses trace details inline", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/graph")) {
+          return new Response(JSON.stringify(graphResponse), { status: 200 });
+        }
+        if (url.endsWith("/api/plan") && init?.method === "POST") {
+          return new Response(
+            JSON.stringify({
+              run_id: "run-1",
+              trace_id: "trace-1",
+              status: "SUCCESS",
+              route: ["A", "B"],
+              total_cost: 4,
+              summary: "Planned route A -> B with total cost 4.",
+              candidates: [],
+            }),
+            { status: 200 },
+          );
+        }
+        if (url.endsWith("/api/traces/trace-1")) {
+          return new Response(
+            JSON.stringify({
+              trace_id: "trace-1",
+              run_id: "run-1",
+              steps: [
+                {
+                  step_index: 0,
+                  step_type: "planner",
+                  name: "planner.preview_problem",
+                  summary: "Prepared the formal routing problem for solving.",
+                  payload: {},
+                  highlights: {},
+                  latency_ms: 12,
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        throw new Error(`Unhandled fetch: ${url}`);
+      }),
+    );
+
+    const wrapper = mount(App, { global: { plugins: [createPinia()] } });
+    await flushUi();
+
+    await wrapper.get("[data-testid='run-planner']").trigger("click");
+    await flushUi();
+
+    expect(wrapper.text()).not.toContain("Latency: 12 ms");
+
+    await wrapper.get("[data-testid='trace-step-0']").trigger("click");
+    await flushUi();
+
+    expect(wrapper.text()).toContain("Prepared the formal routing problem for solving.");
+    expect(wrapper.text()).toContain("Latency: 12 ms");
+
+    await wrapper.get("[data-testid='trace-step-0']").trigger("click");
+    await flushUi();
+
+    expect(wrapper.text()).not.toContain("Latency: 12 ms");
+  });
+
   it("shows a graph-pane error when the backend graph request fails", async () => {
     vi.stubGlobal(
       "fetch",

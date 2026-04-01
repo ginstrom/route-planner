@@ -3,23 +3,32 @@ import { computed, onMounted, ref } from "vue";
 import { storeToRefs } from "pinia";
 
 import { useGraphStore } from "./stores/graph";
+import { useExplanationStore } from "./stores/explanation";
 import { useRunStore } from "./stores/run";
 import { useTraceStore } from "./stores/trace";
+import type { TraceStep } from "./types";
 
 const graphStore = useGraphStore();
+const explanationStore = useExplanationStore();
 const runStore = useRunStore();
 const traceStore = useTraceStore();
 
 const { nodes, edges, loading: graphLoading, error: graphError } = storeToRefs(graphStore);
+const {
+  answer: traceExplanationAnswer,
+  error: traceExplanationError,
+  lastQuery: traceExplanationLastQuery,
+  loading: traceExplanationLoading,
+  usedFallback: traceExplanationUsedFallback,
+} = storeToRefs(explanationStore);
 const { latestPlan, running, error } = storeToRefs(runStore);
 const { trace, selectedStepIndex } = storeToRefs(traceStore);
 
 const plannerQuery = ref("Start at A and visit C and E");
-const scenarioId = ref("baseline");
-const startNode = ref("A");
 const selectedEdgeId = ref<string | null>(null);
-
-const requiredVisits = ref<string[]>([]);
+const rawModalTitle = ref("Raw Trace");
+const rawModalJson = ref("");
+const traceQuestion = ref("");
 
 const routeEdges = computed(() => {
   const route = latestPlan.value?.route ?? [];
@@ -53,34 +62,67 @@ const plannerModeLabel = computed(() => {
   const value = plannerModeStep.value?.payload?.planner_mode;
   return typeof value === "string" ? value : "local";
 });
+const canExplainTrace = computed(() => Boolean(trace.value?.trace_id) && traceQuestion.value.trim().length > 0 && !traceExplanationLoading.value);
 
 function edgeKey(source: string, target: string) {
   return [source, target].sort().join("-");
 }
 
-function buildQueryFromControls() {
-  const visits = requiredVisits.value.length ? ` and visit ${requiredVisits.value.join(" and ")}` : "";
-  plannerQuery.value = `Start at ${startNode.value}${visits}`;
+function hasTraceData(value: Record<string, unknown>) {
+  return Object.keys(value).length > 0;
+}
+
+function formatTraceData(value: Record<string, unknown>) {
+  return JSON.stringify(value, null, 2);
+}
+
+function openJsonModal(title: string, payload: unknown) {
+  rawModalTitle.value = title;
+  rawModalJson.value = JSON.stringify(payload, null, 2);
+}
+
+function highlightJson(json: string): string {
+  return json
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(
+      /("(\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g,
+      (match) => {
+        let cls = "json-number";
+        if (/^"/.test(match)) {
+          cls = /:$/.test(match) ? "json-key" : "json-string";
+        } else if (/true|false/.test(match)) {
+          cls = "json-boolean";
+        } else if (/null/.test(match)) {
+          cls = "json-null";
+        }
+        return `<span class="${cls}">${match}</span>`;
+      },
+    );
+}
+
+function clearDerivedRouteState() {
+  runStore.reset();
+  traceStore.reset();
+  explanationStore.reset();
+  traceQuestion.value = "";
 }
 
 async function loadGraph() {
   await graphStore.loadGraph();
-  if (nodes.value.length > 0 && !nodes.value.some((node) => node.id === startNode.value)) {
-    startNode.value = nodes.value[0].id;
-  }
 }
 
 async function runPlanner() {
+  explanationStore.reset();
+  traceQuestion.value = "";
   const result = await runStore.runPlanner(plannerQuery.value);
   await traceStore.loadTrace(result.trace_id);
 }
 
-async function applyScenario() {
-  if (scenarioId.value === "baseline") {
-    await graphStore.resetGraph();
-  } else {
-    await graphStore.loadScenario(scenarioId.value);
-  }
+async function resetGraph() {
+  await graphStore.resetGraph();
+  clearDerivedRouteState();
 }
 
 async function updateEdgeCost(edgeId: string, nextValue: string) {
@@ -92,6 +134,32 @@ async function updateEdgeCost(edgeId: string, nextValue: string) {
 
 async function toggleEdgeBlocked(edgeId: string, blocked: boolean) {
   await graphStore.patchEdge(edgeId, { blocked });
+}
+
+async function explainTrace() {
+  if (!trace.value?.trace_id || !traceQuestion.value.trim()) {
+    return;
+  }
+  await explanationStore.askTraceQuestion(trace.value.trace_id, traceQuestion.value.trim(), plannerQuery.value);
+}
+
+function openRawTrace(step: TraceStep) {
+  openJsonModal("Raw Trace", step);
+}
+
+function openRawTraceAll() {
+  if (!trace.value) {
+    return;
+  }
+  openJsonModal("Raw Trace", trace.value);
+}
+
+function openTraceExplainQuery() {
+  openJsonModal("Trace Explanation Query", traceExplanationLastQuery.value);
+}
+
+function closeRawTrace() {
+  rawModalJson.value = "";
 }
 
 onMounted(() => {
@@ -106,34 +174,6 @@ onMounted(() => {
       <h1>Graph Controls</h1>
 
       <label class="field">
-        <span>Start Node</span>
-        <select v-model="startNode" data-testid="start-node">
-          <option v-for="node in nodes" :key="node.id" :value="node.id">{{ node.id }}</option>
-        </select>
-      </label>
-
-      <div class="field">
-        <span>Required Visits</span>
-        <div class="visit-grid">
-          <label v-for="node in nodes" :key="node.id" class="visit-chip">
-            <input
-              :value="node.id"
-              :checked="requiredVisits.includes(node.id)"
-              :disabled="node.id === startNode"
-              type="checkbox"
-              @change="
-                requiredVisits = requiredVisits.includes(node.id)
-                  ? requiredVisits.filter((item) => item !== node.id)
-                  : [...requiredVisits, node.id]
-              "
-            />
-            {{ node.id }}
-          </label>
-        </div>
-        <button class="ghost-button" type="button" @click="buildQueryFromControls">Build Query</button>
-      </div>
-
-      <label class="field">
         <span>Planner Query</span>
         <textarea v-model="plannerQuery" data-testid="planner-query" rows="4" />
       </label>
@@ -142,20 +182,7 @@ onMounted(() => {
         <button data-testid="run-planner" :disabled="running" type="button" @click="runPlanner">
           {{ running ? "Planning..." : "Run Planner" }}
         </button>
-        <button class="ghost-button" type="button" @click="graphStore.resetGraph">Reset Graph</button>
-      </div>
-
-      <div class="field">
-        <span>Scenario</span>
-        <div class="scenario-row">
-          <select v-model="scenarioId">
-            <option value="baseline">baseline</option>
-            <option value="single_block">single_block</option>
-            <option value="cost_spike">cost_spike</option>
-            <option value="infeasible">infeasible</option>
-          </select>
-          <button class="ghost-button" type="button" @click="applyScenario">Apply</button>
-        </div>
+        <button class="ghost-button" type="button" @click="resetGraph">Reset Graph</button>
       </div>
 
       <div class="edge-table">
@@ -212,6 +239,54 @@ onMounted(() => {
           </text>
         </g>
       </svg>
+
+      <section data-testid="trace-explain-card" class="trace-explain-card">
+        <div class="trace-explain-header">
+          <div>
+            <p class="eyebrow">Trace Query</p>
+            <h3>Ask About This Trace</h3>
+          </div>
+          <span v-if="traceExplanationUsedFallback" data-testid="trace-explain-fallback" class="summary-flag warning">
+            Anthropic explanation failed; fallback used
+          </span>
+        </div>
+
+        <label class="field">
+          <span>Question</span>
+          <textarea
+            v-model="traceQuestion"
+            data-testid="trace-question"
+            rows="3"
+            placeholder="Why did you choose A-B-C instead of A-C?"
+          />
+        </label>
+
+        <div class="button-row">
+          <button
+            data-testid="trace-explain-submit"
+            :disabled="!canExplainTrace"
+            type="button"
+            @click="explainTrace"
+          >
+            {{ traceExplanationLoading ? "Explaining..." : "Explain Route Choice" }}
+          </button>
+        </div>
+
+        <div class="trace-query-actions">
+          <button
+            data-testid="trace-explain-query-link"
+            class="trace-raw-link"
+            type="button"
+            @click.stop="openTraceExplainQuery"
+          >
+            (see query)
+          </button>
+        </div>
+
+        <p v-if="!trace?.trace_id" class="graph-helper">Run the planner to ask questions about the completed trace.</p>
+        <p v-if="traceExplanationError" class="error">{{ traceExplanationError }}</p>
+        <p v-if="traceExplanationAnswer" data-testid="trace-explain-answer" class="trace-explain-answer">{{ traceExplanationAnswer }}</p>
+      </section>
     </main>
 
     <section class="panel trace-panel">
@@ -234,7 +309,18 @@ onMounted(() => {
       </div>
 
       <div class="trace-list">
-        <h3>Trace</h3>
+        <div class="trace-section-header">
+          <h3>Trace</h3>
+          <button
+            v-if="trace"
+            data-testid="trace-raw-all"
+            class="trace-inline-link"
+            type="button"
+            @click="openRawTraceAll"
+          >
+            (raw)
+          </button>
+        </div>
         <div
           v-for="step in trace?.steps ?? []"
           :key="step.step_index"
@@ -252,11 +338,29 @@ onMounted(() => {
               <strong>{{ step.name }}</strong>
               <span>{{ step.summary }}</span>
             </span>
-            <span class="trace-step-toggle">{{ selectedStepIndex === step.step_index ? "Hide" : "Show" }}</span>
+            <span class="trace-step-actions">
+              <span class="trace-step-toggle">{{ selectedStepIndex === step.step_index ? "Hide" : "Show" }}</span>
+              <button
+                :data-testid="`trace-raw-${step.step_index}`"
+                class="trace-raw-link"
+                type="button"
+                @click.stop="openRawTrace(step)"
+              >
+                raw
+              </button>
+            </span>
           </button>
 
           <div v-if="selectedStepIndex === step.step_index" class="trace-step-details">
             <p>{{ step.summary }}</p>
+            <div v-if="hasTraceData(step.payload)" class="trace-step-block">
+              <strong>Payload</strong>
+              <pre>{{ formatTraceData(step.payload) }}</pre>
+            </div>
+            <div v-if="hasTraceData(step.highlights)" class="trace-step-block">
+              <strong>Highlights</strong>
+              <pre>{{ formatTraceData(step.highlights) }}</pre>
+            </div>
             <p v-if="step.latency_ms !== null"><strong>Latency:</strong> {{ step.latency_ms }} ms</p>
           </div>
         </div>
@@ -275,8 +379,22 @@ onMounted(() => {
           <span v-if="candidate.rejection_reason">{{ candidate.rejection_reason }}</span>
         </div>
       </div>
+
     </section>
   </div>
+
+  <Teleport to="body">
+    <div v-if="rawModalJson" data-testid="trace-raw-modal" class="trace-raw-modal-backdrop" @click.self="closeRawTrace">
+      <div class="trace-raw-modal">
+        <div class="trace-raw-modal-header">
+          <strong>{{ rawModalTitle }}</strong>
+          <button data-testid="trace-raw-close" class="trace-raw-close" type="button" @click="closeRawTrace">Close</button>
+        </div>
+        <!-- eslint-disable-next-line vue/no-v-html -->
+        <pre data-testid="trace-raw-json" class="json-viewer" v-html="highlightJson(rawModalJson)" />
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -331,7 +449,8 @@ h3 {
 }
 
 .controls-panel,
-.trace-panel {
+.trace-panel,
+.panel-graph {
   display: flex;
   flex-direction: column;
   gap: 1rem;
@@ -435,6 +554,11 @@ button {
   color: #9a3125;
 }
 
+.graph-helper {
+  margin: 0;
+  color: #4f6470;
+}
+
 .edge-line {
   stroke: #142126;
   stroke-width: 6;
@@ -473,10 +597,30 @@ button {
 
 .summary-card,
 .trace-list,
-.candidate-list {
+.candidate-list,
+.trace-explain-card {
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
+}
+
+.trace-explain-card {
+  padding: 1rem 1.1rem;
+  border-radius: 20px;
+  background: rgba(243, 239, 228, 0.72);
+  border: 1px solid rgba(20, 33, 38, 0.08);
+}
+
+.trace-explain-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.trace-explain-answer {
+  margin: 0;
+  line-height: 1.5;
 }
 
 .summary-flags {
@@ -516,6 +660,18 @@ button {
   background: rgba(243, 239, 228, 0.85);
 }
 
+.trace-query-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.trace-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
 .trace-step,
 .candidate-card {
   display: flex;
@@ -540,10 +696,29 @@ button {
 }
 
 .trace-step-toggle {
-  margin-top: 0.45rem;
   font-size: 0.85rem;
   font-weight: 700;
   color: #8a4b15;
+}
+
+.trace-step-actions {
+  margin-top: 0.45rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.trace-raw-link,
+.trace-raw-close,
+.trace-inline-link {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #8a4b15;
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-decoration: underline;
+  border-radius: 0;
 }
 
 .trace-step-card.selected {
@@ -551,6 +726,8 @@ button {
 }
 
 .trace-step-details {
+  display: grid;
+  gap: 0.65rem;
   padding: 0 0.8rem 0.8rem;
   color: #173746;
 }
@@ -558,6 +735,84 @@ button {
 .trace-step-details p {
   margin: 0;
 }
+
+.trace-step-block {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.trace-step-block pre {
+  margin: 0;
+  padding: 0.75rem;
+  border-radius: 14px;
+  background: rgba(20, 33, 38, 0.06);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+:global(.trace-raw-modal-backdrop) {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: rgba(20, 33, 38, 0.55);
+}
+
+:global(.trace-raw-modal) {
+  width: min(760px, 90vw);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-radius: 20px;
+  background: #f9f4ea;
+  box-shadow: 0 24px 60px rgba(20, 33, 38, 0.2);
+}
+
+:global(.trace-raw-modal-header) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-shrink: 0;
+}
+
+:global(.trace-raw-modal-header button) {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #8a4b15;
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-decoration: underline;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+:global(.json-viewer) {
+  margin: 0;
+  padding: 1rem;
+  border-radius: 14px;
+  background: #1e2d33;
+  color: #cdd8dc;
+  overflow: auto;
+  max-height: calc(80vh - 5rem);
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: "IBM Plex Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+:global(.json-key) { color: #7ecfdb; }
+:global(.json-string) { color: #a8d9a0; }
+:global(.json-number) { color: #f0a97e; }
+:global(.json-boolean) { color: #c79eec; }
+:global(.json-null) { color: #e87a7a; }
 
 .error {
   color: #b03f2f;

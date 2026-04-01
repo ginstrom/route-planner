@@ -15,6 +15,10 @@ export const useTraceStore = defineStore("trace", {
     },
   },
   actions: {
+    reset() {
+      this.trace = null;
+      this.selectedStepIndex = null;
+    },
     async loadTrace(traceId: string) {
       this.trace = await apiGet<TracePayload>(`/api/traces/${traceId}`);
       this.selectedStepIndex = null;

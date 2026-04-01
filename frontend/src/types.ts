@@ -50,3 +50,12 @@ export type TracePayload = {
   run_id: string;
   steps: TraceStep[];
 };
+
+export type TraceExplainResponse = {
+  trace_id: string;
+  planner_mode: string;
+  used_fallback: boolean;
+  answer: string;
+  llm_query: Record<string, string>;
+  error: string | null;
+};

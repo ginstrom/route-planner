@@ -11,6 +11,11 @@ export const useRunStore = defineStore("run", {
     error: "" as string,
   }),
   actions: {
+    reset() {
+      this.latestPlan = null;
+      this.running = false;
+      this.error = "";
+    },
     async runPlanner(query: string) {
       this.running = true;
       this.error = "";

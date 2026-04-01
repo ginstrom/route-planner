@@ -11,7 +11,7 @@ The backend uses Claude (via the Anthropic API) to interpret natural-language ro
 ## Architecture
 
 - **Backend** — FastAPI + SQLModel + OR-Tools + Anthropic SDK (Python)
-- **Frontend** — React + Vite (TypeScript)
+- **Frontend** — Vue 3 + Pinia + Vite (TypeScript)
 - **Planner modes** — `local` (deterministic), `anthropic`, or `anthropic_with_fallback`
 
 ## Installation
@@ -72,11 +72,11 @@ docker compose up --build
 ### Demo flow
 
 1. Open the frontend in a browser.
-2. Select a scenario (`single_block`, `cost_spike`, `infeasible`, etc.).
-3. Enter a natural-language query, e.g. `Start at A and visit C and E`.
-4. Click **Run Planner**.
-5. Review the summary, trace steps, and candidate list in the right panel.
-6. Switch to the `infeasible` scenario and run `Start at A and visit E` to see how the model explains an infeasible result.
+2. Enter a natural-language query, e.g. `Start at A and visit C and E`.
+3. Click **Run Planner**.
+4. Review the summary, trace steps, and candidate list in the right panel.
+5. To simulate the `infeasible` scenario, check **Blocked** on edges B-E, C-E, and D-E in the edge table, then run `Start at A and visit E` to see how the model explains an infeasible result.
+6. Click **Reset Graph** to restore default edge costs and blocked states.
 
 ## Running tests
 

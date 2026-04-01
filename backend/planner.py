@@ -659,6 +659,15 @@ def _build_local_explanation(
     trace_payload: dict[str, object],
     used_fallback: bool = False,
 ) -> str:
+    grounded_explanation = _build_grounded_explanation(task_prompt, question, run, trace_payload)
+    if grounded_explanation:
+        prefix = (
+            "Anthropic explanation failed; showing fallback explanation grounded in trace data. "
+            if used_fallback
+            else ""
+        )
+        return f"{prefix}{grounded_explanation}".strip()
+
     result_payload = run.result_payload or {}
     route = result_payload.get("route")
     route_text = " -> ".join(route) if isinstance(route, list) and route else "no final route"
@@ -757,9 +766,33 @@ def _extract_candidate_payload(run: RunRecord, trace_payload: dict[str, object])
     return {}
 
 
+def _solve_payload_from_trace(trace_payload: dict[str, object]) -> dict[str, Any]:
+    steps = trace_payload.get("steps", [])
+    solve_step = next((step for step in steps if step.get("name") == "planner.solve"), None) if isinstance(steps, list) else None
+    payload = solve_step.get("payload", {}) if isinstance(solve_step, dict) else {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _parse_route_mentions(question: str) -> list[list[str]]:
     matches = re.findall(r"[A-Z](?:\s*(?:->|-)\s*[A-Z])+", question.upper())
     return [re.findall(r"[A-Z]", match) for match in matches]
+
+
+def _parse_node_mentions(question: str) -> list[str]:
+    patterns = (
+        r"\bNODE\s+([A-Z])\b",
+        r"\bVISIT\s+([A-Z])\b",
+        r"\bSKIPPED\s+([A-Z])\b",
+        r"\bTHROUGH\s+([A-Z])\b",
+        r"\bVIA\s+([A-Z])\b",
+    )
+    mentions: list[str] = []
+    normalized = question.upper()
+    for pattern in patterns:
+        for match in re.findall(pattern, normalized):
+            if match not in mentions:
+                mentions.append(match)
+    return mentions
 
 
 def _compact_route(route: list[str]) -> str:
@@ -794,15 +827,144 @@ def _build_compared_candidates_section(question: str, run: RunRecord, candidate_
     )
 
 
+def _build_grounded_route_explanation(
+    task_prompt: str,
+    question: str,
+    run: RunRecord,
+    solve_payload: dict[str, Any],
+) -> str | None:
+    route_mentions = _parse_route_mentions(question)
+    if not route_mentions:
+        return None
+
+    result_payload = run.result_payload or {}
+    chosen_route = result_payload.get("route")
+    if not isinstance(chosen_route, list) or not chosen_route:
+        return None
+
+    chosen_mention = next((mention for mention in route_mentions if chosen_route[: len(mention)] == mention), None)
+    alternative_route = next((mention for mention in route_mentions if mention != chosen_mention), None)
+    if alternative_route is None and route_mentions and chosen_mention is None:
+        alternative_route = route_mentions[0]
+    if alternative_route is None:
+        return None
+
+    graph_edge_facts = solve_payload.get("graph_edge_facts", [])
+    alternative_analysis = _analyze_route_nodes(alternative_route, graph_edge_facts)
+    chosen_analysis = _analyze_route_nodes(chosen_route, graph_edge_facts)
+    chosen_text = " -> ".join(chosen_route)
+    alternative_text = _compact_route(alternative_route)
+    alternative_route_text = " -> ".join(alternative_route)
+
+    parts = [f"The planner chose {chosen_text}."]
+    if task_prompt:
+        parts.append(f"Task prompt: {task_prompt}.")
+
+    if alternative_analysis["blocked_edges"]:
+        blocked_edges = ", ".join(alternative_analysis["blocked_edges"])
+        parts.append(
+            f"The alternative {alternative_text} is not valid because it uses blocked edge {blocked_edges}."
+        )
+    elif alternative_analysis["missing_edges"]:
+        missing_edges = ", ".join(alternative_analysis["missing_edges"])
+        parts.append(
+            f"The alternative {alternative_text} is not valid because edge {missing_edges} does not exist in the graph."
+        )
+    elif alternative_analysis["total_cost"] is not None and chosen_analysis["total_cost"] is not None:
+        parts.append(
+            f"{chosen_text} has total cost {chosen_analysis['total_cost']}, while {alternative_route_text} has total cost {alternative_analysis['total_cost']}."
+        )
+    else:
+        return None
+
+    return " ".join(parts)
+
+
+def _build_grounded_node_explanation(
+    task_prompt: str,
+    question: str,
+    run: RunRecord,
+    solve_payload: dict[str, Any],
+) -> str | None:
+    node_mentions = _parse_node_mentions(question)
+    if not node_mentions:
+        return None
+
+    result_payload = run.result_payload or {}
+    chosen_route = result_payload.get("route")
+    if not isinstance(chosen_route, list) or not chosen_route:
+        return None
+
+    chosen_text = " -> ".join(chosen_route)
+    solver_input = solve_payload.get("solver_input", {}) if isinstance(solve_payload.get("solver_input"), dict) else {}
+    required_visits = solver_input.get("required_visits", []) if isinstance(solver_input, dict) else []
+    candidate_routes = solve_payload.get("candidate_routes", []) if isinstance(solve_payload.get("candidate_routes"), list) else []
+    accepted_candidates = [
+        candidate for candidate in candidate_routes if isinstance(candidate, dict) and candidate.get("status") == "ACCEPTED"
+    ]
+    graph_edge_facts = solve_payload.get("graph_edge_facts", [])
+
+    for node in node_mentions:
+        if node in chosen_route:
+            continue
+
+        with_node = [
+            candidate for candidate in accepted_candidates if isinstance(candidate.get("route"), list) and node in candidate["route"]
+        ]
+        cheapest_with_node = min(
+            with_node,
+            key=lambda candidate: (candidate.get("total_cost") is None, candidate.get("total_cost") or 0, candidate.get("route") or []),
+        ) if with_node else None
+        incident_blocked_edges = sorted(
+            edge["edge_id"]
+            for edge in graph_edge_facts
+            if edge["blocked"] and node in {edge["source"], edge["target"]}
+        ) if isinstance(graph_edge_facts, list) else []
+
+        parts = [f"The selected route {chosen_text} skips node {node}."]
+        if task_prompt:
+            parts.append(f"Task prompt: {task_prompt}.")
+        if node not in required_visits:
+            parts.append(f"Node {node} was not required by the request.")
+        if cheapest_with_node and cheapest_with_node.get("total_cost") is not None and result_payload.get("total_cost") is not None:
+            route_text = " -> ".join(cheapest_with_node.get("route", []))
+            parts.append(
+                f"The cheapest accepted route that includes {node} is {route_text} at cost {cheapest_with_node['total_cost']}, compared with {result_payload['total_cost']} for the selected route."
+            )
+        if incident_blocked_edges:
+            blocked_edges = ", ".join(incident_blocked_edges)
+            parts.append(f"The graph also had blocked edge {blocked_edges} touching node {node}.")
+        return " ".join(parts)
+
+    return None
+
+
+def _build_grounded_explanation(
+    task_prompt: str,
+    question: str,
+    run: RunRecord,
+    trace_payload: dict[str, object],
+) -> str | None:
+    solve_payload = _solve_payload_from_trace(trace_payload)
+    if not solve_payload:
+        return None
+
+    route_explanation = _build_grounded_route_explanation(task_prompt, question, run, solve_payload)
+    if route_explanation:
+        return route_explanation
+
+    return _build_grounded_node_explanation(task_prompt, question, run, solve_payload)
+
+
 def _build_llm_query(task_prompt: str, question: str, run: RunRecord, trace_payload: dict[str, object]) -> dict[str, str]:
     result_payload = json.dumps(run.result_payload or {}, indent=2)
     steps = trace_payload.get("steps", [])
     candidate_payload = _extract_candidate_payload(run, trace_payload)
     candidate_summary = json.dumps(candidate_payload, indent=2)
-    solve_step = next((step for step in steps if step.get("name") == "planner.solve"), None) if isinstance(steps, list) else None
-    solve_facts = json.dumps(solve_step.get("payload", {}) if isinstance(solve_step, dict) else {}, indent=2)
+    solve_facts = json.dumps(_solve_payload_from_trace(trace_payload), indent=2)
     compared_candidates = _build_compared_candidates_section(question, run, candidate_payload)
     trace_json = json.dumps(steps, indent=2)
+    grounded_explanation = _build_grounded_explanation(task_prompt, question, run, trace_payload) or ""
     user_prompt = (
         f"Task prompt:\n{task_prompt or '(missing)'}\n\n"
         f"Final run status: {run.status}\n"
@@ -810,9 +972,11 @@ def _build_llm_query(task_prompt: str, question: str, run: RunRecord, trace_payl
         f"Solve route facts:\n{solve_facts}\n\n"
         f"Candidate summary from trace:\n{candidate_summary}\n\n"
         f"Compared candidate routes:\n{compared_candidates}\n\n"
+        f"Grounded explanation facts:\n{grounded_explanation or '(none)'}\n\n"
         f"Stored trace steps:\n{trace_json}\n\n"
         f"User question:\n{question}\n\n"
         "When the user names partial routes such as A-B-C instead of full routes, compare against the closest full candidate by matching that prefix.\n"
+        "When grounded explanation facts are present, treat them as the authoritative answer scaffold and do not contradict them.\n"
         "If a named alternative is present in the candidate summary, explicitly compare its cost/status against the chosen route.\n"
         "If a named alternative is not a candidate route, use Solve route facts to determine whether it traverses blocked or missing edges before answering.\n"
         "Do not say the alternative was not considered if it appears in either Candidate summary from trace or Compared candidate routes.\n"
@@ -856,6 +1020,7 @@ def explain_trace(session: Session, trace_id: str, request: TraceExplainRequest)
     task_prompt = request.task_prompt or ((run.request_payload or {}).get("query") if isinstance(run.request_payload, dict) else None) or ""
     settings = get_settings()
     llm_query = _build_llm_query(task_prompt, question, run, trace_payload)
+    grounded_explanation = _build_grounded_explanation(task_prompt, question, run, trace_payload)
 
     if settings.planner_mode == "local":
         return TraceExplainResponse(

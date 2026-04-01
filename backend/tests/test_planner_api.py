@@ -434,14 +434,12 @@ def test_trace_explain_prompt_includes_candidates_even_without_candidate_trace_s
         )
         payload = response.json()
 
-    explanation_call = fake_client.calls[-1]
-    messages = explanation_call["messages"]
     assert response.status_code == 200
-    assert "A-C-E" in messages[0]["content"]
-    assert '"total_cost": 13' in messages[0]["content"]
-    assert 'Compared candidate routes' in messages[0]["content"]
-    assert '"chosen_route"' in messages[0]["content"]
-    assert '"alternative_route"' in messages[0]["content"]
+    assert "A-C-E" in payload["llm_query"]["user_prompt"]
+    assert '"total_cost": 13' in payload["llm_query"]["user_prompt"]
+    assert 'Compared candidate routes' in payload["llm_query"]["user_prompt"]
+    assert '"chosen_route"' in payload["llm_query"]["user_prompt"]
+    assert '"alternative_route"' in payload["llm_query"]["user_prompt"]
     assert "A-C-E" in payload["llm_query"]["user_prompt"]
 
 
@@ -466,13 +464,79 @@ def test_trace_explain_prompt_includes_solve_route_facts_for_blocked_alternative
             f"/api/traces/{trace_id}/explain",
             json={"question": "Why didn't you choose A-B-E instead of A-D-E?"},
         )
+        payload = response.json()
+
+    assert response.status_code == 200
+    assert 'Solve route facts' in payload["llm_query"]["user_prompt"]
+    assert '"edge_id": "B-E"' in payload["llm_query"]["user_prompt"]
+    assert '"blocked": true' in payload["llm_query"]["user_prompt"]
+
+
+def test_trace_explain_prompt_includes_grounded_blocked_route_facts_in_anthropic_mode(monkeypatch, database_url) -> None:
+    fake_client = _capturing_anthropic_client(
+        _anthropic_response(
+            _tool_use("parse_request", "tool-3", {"query": "Start at A and visit E"}),
+            _tool_use("planner_preview_problem", "tool-4", {}),
+            _tool_use("planner_solve", "tool-5", {}),
+            _tool_use("planner_get_candidates", "tool-6", {}),
+        ),
+        _anthropic_response(_text_block("Complete")),
+        _anthropic_response(_text_block('{"route":["A","D","E"],"rationale":"A-B-E is blocked, so choose A-D-E."}')),
+        _anthropic_response(_text_block("The trace shows A-B-E uses blocked edge B-E, so A -> D -> E was chosen.")),
+    )
+
+    with _build_client(monkeypatch, database_url, "anthropic", fake_client) as test_client:
+        test_client.patch("/api/graph/edges/B-E", json={"blocked": True})
+        plan_response = test_client.post("/api/plan", json={"query": "Start at A and visit E"})
+        trace_id = plan_response.json()["trace_id"]
+        response = test_client.post(
+            f"/api/traces/{trace_id}/explain",
+            json={"question": "Why didn't you choose A-B-E instead of A-D-E?"},
+        )
+        payload = response.json()
 
     explanation_call = fake_client.calls[-1]
-    messages = explanation_call["messages"]
+    prompt = explanation_call["messages"][0]["content"]
     assert response.status_code == 200
-    assert 'Solve route facts' in messages[0]["content"]
-    assert '"edge_id": "B-E"' in messages[0]["content"]
-    assert '"blocked": true' in messages[0]["content"]
+    assert payload["used_fallback"] is False
+    assert "Grounded explanation facts" in prompt
+    assert "A-B-E is not valid because it uses blocked edge B-E" in prompt
+    assert payload["answer"] == "The trace shows A-B-E uses blocked edge B-E, so A -> D -> E was chosen."
+
+
+def test_trace_explain_prompt_includes_grounded_skipped_node_facts_in_anthropic_mode(monkeypatch, database_url) -> None:
+    fake_client = _capturing_anthropic_client(
+        _anthropic_response(
+            _tool_use("parse_request", "tool-3", {"query": "Start at A and visit C and E"}),
+            _tool_use("planner_preview_problem", "tool-4", {}),
+            _tool_use("planner_solve", "tool-5", {}),
+            _tool_use("planner_get_candidates", "tool-6", {}),
+        ),
+        _anthropic_response(_text_block("Complete")),
+        _anthropic_response(_text_block('{"route":["A","C","E"],"rationale":"Shortest valid route after the block."}')),
+        _anthropic_response(_text_block("B was skipped because it was not required, A-B was blocked, and the selected route A -> C -> E remained cheaper.")),
+    )
+
+    with _build_client(monkeypatch, database_url, "anthropic", fake_client) as test_client:
+        test_client.patch("/api/graph/edges/A-B", json={"blocked": True})
+        response = test_client.post(
+            "/api/plan",
+            json={"query": "Start at A and visit C and E"},
+        )
+        trace_id = response.json()["trace_id"]
+
+        explain_response = test_client.post(
+            f"/api/traces/{trace_id}/explain",
+            json={"question": "Why was node B skipped?"},
+        )
+        payload = explain_response.json()
+
+    assert explain_response.status_code == 200
+    prompt = fake_client.calls[-1]["messages"][0]["content"]
+    assert "Grounded explanation facts" in prompt
+    assert "Node B was not required by the request." in prompt
+    assert "blocked edge A-B" in prompt
+    assert payload["answer"] == "B was skipped because it was not required, A-B was blocked, and the selected route A -> C -> E remained cheaper."
 
 
 def test_trace_explain_falls_back_when_anthropic_explanation_fails(monkeypatch, database_url) -> None:

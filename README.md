@@ -4,6 +4,10 @@ A demo application for an LLM explainability article/talk. It shows how an AI ag
 
 The backend uses Claude (via the Anthropic API) to interpret natural-language routing requests, call structured tools to inspect the graph and constraints, and invoke an OR-Tools solver. Every step is recorded so the frontend can replay what the model did and why.
 
+## Demo
+
+<video src="assets/screencast.webm" controls autoplay loop muted width="100%"></video>
+
 ## Architecture
 
 - **Backend** — FastAPI + SQLModel + OR-Tools + Anthropic SDK (Python)

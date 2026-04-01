@@ -6,7 +6,7 @@ The backend uses Claude (via the Anthropic API) to interpret natural-language ro
 
 ## Demo
 
-<video src="assets/screencast.webm" controls autoplay loop muted width="100%"></video>
+![Demo](assets/screencast.gif)
 
 ## Architecture
 

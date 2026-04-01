@@ -53,7 +53,50 @@ def _shortest_path(
     return None
 
 
-def solve_route(graph: GraphRead, request: DirectSolveRequest) -> DirectSolveResponse:
+def _enumerate_simple_candidates(graph: GraphRead, request: DirectSolveRequest) -> list[CandidateRoute]:
+    adjacency = _adjacency(graph)
+    required = set(request.required_visits)
+    candidates: list[CandidateRoute] = []
+    seen_routes: set[tuple[str, ...]] = set()
+
+    def dfs(node: str, path: list[str], cost: int, visited: set[str]) -> None:
+        covered = required.issubset(path)
+        if covered and (not request.return_to_start or (node == request.start_node and len(path) > 1)):
+            route_key = tuple(path)
+            if route_key not in seen_routes:
+                seen_routes.add(route_key)
+                candidates.append(
+                    CandidateRoute(
+                        route=list(path),
+                        total_cost=cost,
+                        status="ACCEPTED",
+                        rejection_reason=None,
+                    )
+                )
+            if not request.return_to_start:
+                return
+
+        for neighbor, edge_cost in adjacency.get(node, []):
+            allow_return_to_start = (
+                request.return_to_start
+                and covered
+                and neighbor == request.start_node
+                and node != request.start_node
+            )
+            if neighbor in visited and not allow_return_to_start:
+                continue
+
+            next_path = path + [neighbor]
+            if allow_return_to_start:
+                dfs(neighbor, next_path, cost + edge_cost, visited)
+            else:
+                dfs(neighbor, next_path, cost + edge_cost, visited | {neighbor})
+
+    dfs(request.start_node, [request.start_node], 0, {request.start_node})
+    return sorted(candidates, key=lambda item: (item.total_cost or 0, item.route))
+
+
+def _enumerate_rejected_candidates(graph: GraphRead, request: DirectSolveRequest) -> list[CandidateRoute]:
     adjacency = _adjacency(graph)
     required = tuple(request.required_visits)
     visit_orders = list(permutations(required)) or [()]
@@ -86,18 +129,30 @@ def solve_route(graph: GraphRead, request: DirectSolveRequest) -> DirectSolveRes
             )
         )
 
-    accepted = sorted(
-        (candidate for candidate in candidates if candidate.status == "ACCEPTED"),
-        key=lambda item: (item.total_cost or 0, item.route),
-    )
     rejected = sorted(
         (candidate for candidate in candidates if candidate.status == "REJECTED"),
         key=lambda item: item.rejection_reason or "",
     )
+    return rejected
+
+
+def _visited_avoid_nodes(route: list[str], request: DirectSolveRequest) -> list[str]:
+    avoid_nodes = set(request.avoid_nodes) - set(request.required_visits)
+    return [node for node in request.avoid_nodes if node in avoid_nodes and node in route]
+
+
+def _candidate_rank(candidate: CandidateRoute, request: DirectSolveRequest) -> tuple[int, int, list[str]]:
+    violations = len(_visited_avoid_nodes(candidate.route, request))
+    return (violations, candidate.total_cost or 0, candidate.route)
+
+
+def solve_route(graph: GraphRead, request: DirectSolveRequest) -> DirectSolveResponse:
+    accepted = _enumerate_simple_candidates(graph, request)
+    rejected = _enumerate_rejected_candidates(graph, request) if not accepted else []
     ordered_candidates = accepted + rejected
 
     if accepted:
-        best = accepted[0]
+        best = min(accepted, key=lambda candidate: _candidate_rank(candidate, request))
         return DirectSolveResponse(
             status="SUCCESS",
             route=best.route,

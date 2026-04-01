@@ -77,3 +77,49 @@ def test_failed_run_keeps_partial_trace(db_session) -> None:
     assert run.error_message == "planner timeout"
     assert len(fetched["steps"]) == 1
     assert fetched["steps"][0]["name"] == "parse_request"
+
+
+def test_trace_explain_endpoint_returns_local_grounded_answer(client) -> None:
+    plan_response = client.post(
+        "/api/plan",
+        json={"query": "Start at A and visit C and E"},
+    )
+    trace_id = plan_response.json()["trace_id"]
+
+    response = client.post(
+        f"/api/traces/{trace_id}/explain",
+        json={"question": "Why did you choose A-B-C-E instead of A-C-E?"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["trace_id"] == trace_id
+    assert payload["planner_mode"] == "local"
+    assert payload["used_fallback"] is False
+    assert "A -> B -> C -> E" in payload["answer"]
+    assert "A -> C -> E" in payload["answer"]
+    assert "11" in payload["answer"]
+    assert "13" in payload["answer"]
+    assert "A-C-E" in payload["llm_query"]["user_prompt"]
+    assert '"route": [' in payload["llm_query"]["user_prompt"]
+
+
+def test_trace_explain_local_answer_mentions_blocked_named_alternative(client) -> None:
+    client.patch("/api/graph/edges/B-E", json={"blocked": True})
+    plan_response = client.post(
+        "/api/plan",
+        json={"query": "Start at A and visit E"},
+    )
+    trace_id = plan_response.json()["trace_id"]
+
+    response = client.post(
+        f"/api/traces/{trace_id}/explain",
+        json={"question": "Why didn't you choose A-B-E instead of A-D-E?"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "A-B-E" in payload["answer"]
+    assert "blocked" in payload["answer"].lower()
+    assert "B-E" in payload["answer"]
+    assert '"edge_id": "B-E"' in payload["llm_query"]["user_prompt"]

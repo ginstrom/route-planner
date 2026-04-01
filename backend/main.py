@@ -1,13 +1,24 @@
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from sqlmodel import Session
 
 from backend.config import get_settings
 from backend.db import get_engine, get_session, init_db
 from backend.graph import get_graph, load_scenario, patch_edge, reset_graph, seed_default_graph
-from backend.models import DirectSolveRequest, DirectSolveResponse, EdgePatch, GraphRead, PlanRequest, PlanResponse, ScenarioLoad, TraceRead
-from backend.planner import plan_route
+from backend.models import (
+    DirectSolveRequest,
+    DirectSolveResponse,
+    EdgePatch,
+    GraphRead,
+    PlanRequest,
+    PlanResponse,
+    ScenarioLoad,
+    TraceExplainRequest,
+    TraceExplainResponse,
+    TraceRead,
+)
+from backend.planner import explain_trace, plan_route
 from backend.solver import solve_route
 from backend.trace import fetch_trace
 
@@ -66,7 +77,23 @@ def create_app() -> FastAPI:
 
     @api.get("/traces/{trace_id}")
     def get_trace(trace_id: str, session: Session = Depends(get_session)) -> TraceRead:
-        return TraceRead.model_validate(fetch_trace(session, trace_id))
+        try:
+            return TraceRead.model_validate(fetch_trace(session, trace_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @api.post("/traces/{trace_id}/explain")
+    def explain_trace_route(
+        trace_id: str,
+        request: TraceExplainRequest,
+        session: Session = Depends(get_session),
+    ) -> TraceExplainResponse:
+        try:
+            return explain_trace(session, trace_id, request)
+        except ValueError as exc:
+            detail = str(exc)
+            status_code = 404 if "not found" in detail.lower() else 400
+            raise HTTPException(status_code=status_code, detail=detail) from exc
 
     app.include_router(api)
     return app

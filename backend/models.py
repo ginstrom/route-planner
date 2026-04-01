@@ -64,6 +64,7 @@ class CandidateRoute(BaseModel):
 class DirectSolveRequest(BaseModel):
     start_node: str
     required_visits: list[str]
+    avoid_nodes: list[str] = []
     return_to_start: bool = False
 
 
@@ -79,6 +80,7 @@ class RunRecord(SQLModel, table=True):
     id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     mode: str
     status: str = "PENDING"
+    request_payload: dict[str, object] | None = Field(default=None, sa_column=Column(JSON))
     result_payload: dict[str, object] | None = Field(default=None, sa_column=Column(JSON))
     error_message: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -116,3 +118,17 @@ class PlanResponse(BaseModel):
     total_cost: int | None
     candidates: list[CandidateRoute]
     summary: str
+
+
+class TraceExplainRequest(BaseModel):
+    question: str
+    task_prompt: str | None = None
+
+
+class TraceExplainResponse(BaseModel):
+    trace_id: str
+    planner_mode: str
+    used_fallback: bool
+    answer: str
+    llm_query: dict[str, str]
+    error: str | None = None

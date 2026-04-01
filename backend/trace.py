@@ -3,8 +3,8 @@ from sqlmodel import Session, select
 from backend.models import RunRecord, TraceRead, TraceStepRecord
 
 
-def create_run(session: Session, mode: str) -> RunRecord:
-    run = RunRecord(mode=mode)
+def create_run(session: Session, mode: str, request_payload: dict[str, object] | None = None) -> RunRecord:
+    run = RunRecord(mode=mode, request_payload=request_payload)
     session.add(run)
     session.commit()
     session.refresh(run)

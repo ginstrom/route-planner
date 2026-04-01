@@ -9,6 +9,9 @@ services:
       DATABASE_URL: sqlite:///data/route_planner.db
     ports:
       - "8000:8000"
+    volumes:
+      - ./backend:/app/backend
+      - ./pyproject.toml:/app/pyproject.toml
   frontend:
     build:
       context: .
@@ -17,5 +20,9 @@ services:
       VITE_API_PROXY_TARGET: http://backend:8000
     ports:
       - "5173:5173"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/index.html:/app/index.html
     depends_on:
       - backend
